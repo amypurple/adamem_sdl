@@ -19,6 +19,9 @@
 # include <ws2tcpip.h>
 # pragma comment(lib, "Ws2_32.lib")
 typedef int socklen_t;
+/* SOCKET is a 64-bit unsigned handle on Win64; never store it in an int. */
+typedef SOCKET an_socket_t;
+# define AN_INVALID_SOCKET INVALID_SOCKET
 /* gettimeofday shim using Windows FILETIME */
 static int gettimeofday(struct timeval* tv, void* tz)
 {
@@ -36,7 +39,7 @@ static int gettimeofday(struct timeval* tv, void* tz)
 # define sockerrno()      WSAGetLastError()
 # define SOCK_EINTR       WSAEINTR
 # define an_close(fd)     closesocket(fd)
-static void an_set_nonblock(SOCKET fd)
+static void an_set_nonblock(an_socket_t fd)
 {
     u_long mode = 1;
     ioctlsocket(fd, FIONBIO, &mode);
@@ -50,10 +53,12 @@ static void an_set_nonblock(SOCKET fd)
 # include <netinet/in.h>
 # include <netinet/tcp.h>
 # include <arpa/inet.h>
+typedef int an_socket_t;
+# define AN_INVALID_SOCKET (-1)
 # define sockerrno()      errno
 # define SOCK_EINTR       EINTR
 # define an_close(fd)     close(fd)
-static void an_set_nonblock(int fd)
+static void an_set_nonblock(an_socket_t fd)
 {
     fcntl(fd, F_SETFL, O_NONBLOCK);
 }
@@ -100,8 +105,8 @@ static void an_set_nonblock(int fd)
 extern int Verbose;            /* from Coleco.c                               */
 
 static int an_enabled = 0;
-static int an_listen_fd = -1;
-static int an_conn_fd = -1;
+static an_socket_t an_listen_fd = AN_INVALID_SOCKET;
+static an_socket_t an_conn_fd = AN_INVALID_SOCKET;
 
 /* Default routing: forward the FujiNet-owned device IDs, keep keyboard/tape
    local. Bit N set => device id N is forwarded to fujinet. */
@@ -130,7 +135,7 @@ int AdamNet_Init(int port)
 #endif
 
     an_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (an_listen_fd < 0) { perror("AdamNet: socket"); return -1; }
+    if (an_listen_fd == AN_INVALID_SOCKET) { perror("AdamNet: socket"); return -1; }
 
     setsockopt(an_listen_fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof(on));
 
@@ -142,13 +147,13 @@ int AdamNet_Init(int port)
     if (bind(an_listen_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
     {
         perror("AdamNet: bind");
-        an_close(an_listen_fd); an_listen_fd = -1;
+        an_close(an_listen_fd); an_listen_fd = AN_INVALID_SOCKET;
         return -1;
     }
     if (listen(an_listen_fd, 4) < 0)
     {
         perror("AdamNet: listen");
-        an_close(an_listen_fd); an_listen_fd = -1;
+        an_close(an_listen_fd); an_listen_fd = AN_INVALID_SOCKET;
         return -1;
     }
     an_set_nonblock(an_listen_fd);
@@ -160,8 +165,8 @@ int AdamNet_Init(int port)
 
 void AdamNet_Shutdown(void)
 {
-    if (an_conn_fd >= 0) { an_close(an_conn_fd);   an_conn_fd = -1; }
-    if (an_listen_fd >= 0) { an_close(an_listen_fd); an_listen_fd = -1; }
+    if (an_conn_fd != AN_INVALID_SOCKET) { an_close(an_conn_fd);   an_conn_fd = AN_INVALID_SOCKET; }
+    if (an_listen_fd != AN_INVALID_SOCKET) { an_close(an_listen_fd); an_listen_fd = AN_INVALID_SOCKET; }
     an_enabled = 0;
 #ifdef _WIN32
     WSACleanup();
@@ -179,14 +184,15 @@ int AdamNet_IsForwarded(int dev_id)
 
 int AdamNet_Connected(void)
 {
-    int fd, on = 1;
+    an_socket_t fd;
+    int on = 1;
 
     if (!an_enabled) return 0;
-    if (an_conn_fd >= 0) return 1;
-    if (an_listen_fd < 0) return 0;
+    if (an_conn_fd != AN_INVALID_SOCKET) return 1;
+    if (an_listen_fd == AN_INVALID_SOCKET) return 0;
 
     fd = accept(an_listen_fd, NULL, NULL);
-    if (fd < 0) return 0;                      /* nothing waiting (non-blocking)   */
+    if (fd == AN_INVALID_SOCKET) return 0;                      /* nothing waiting (non-blocking)   */
 
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char*)&on, sizeof(on));
     an_conn_fd = fd;
@@ -196,7 +202,7 @@ int AdamNet_Connected(void)
 
 static void an_disconnect(void)
 {
-    if (an_conn_fd >= 0) { an_close(an_conn_fd); an_conn_fd = -1; }
+    if (an_conn_fd != AN_INVALID_SOCKET) { an_close(an_conn_fd); an_conn_fd = AN_INVALID_SOCKET; }
     printf("AdamNet: fujinet-pc disconnected\n");
 }
 
@@ -251,7 +257,7 @@ int AdamNet_WaitForConnection(int timeout_ms)
            hijacked the port. Drop it and wait for the real ADAM fujinet to connect. */
         printf("AdamNet: peer isn't answering AdamNet (another fujinet on this port?); "
             "dropping it and waiting for the ADAM fujinet.\n");
-        if (an_conn_fd >= 0) { an_close(an_conn_fd); an_conn_fd = -1; }
+        if (an_conn_fd != AN_INVALID_SOCKET) { an_close(an_conn_fd); an_conn_fd = AN_INVALID_SOCKET; }
         an_sleep_ms(200);
     }
     return 0;
@@ -263,10 +269,10 @@ int AdamNet_WaitForConnection(int timeout_ms)
 static int an_send(const unsigned char* buf, int len)
 {
     int off = 0, n;
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
     while (off < len)
     {
-        n = send(an_conn_fd, (const char*)(buf + off), len - off, 0);
+        n = (int)send(an_conn_fd, (const char*)(buf + off), len - off, 0);
         if (n > 0) { off += n; continue; }
         if (n < 0 && sockerrno() == SOCK_EINTR) continue;
         an_disconnect();
@@ -284,17 +290,17 @@ static int an_recv(unsigned char* buf, int len, int timeout_ms)
     fd_set rfds;
     struct timeval tv;
 
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
     while (got < len)
     {
         FD_ZERO(&rfds);
         FD_SET(an_conn_fd, &rfds);
         tv.tv_sec = timeout_ms / 1000;
         tv.tv_usec = (timeout_ms % 1000) * 1000;
-        n = select(an_conn_fd + 1, &rfds, NULL, NULL, &tv);
+        n = select((int)(an_conn_fd + 1), &rfds, NULL, NULL, &tv);
         if (n < 0) { if (sockerrno() == SOCK_EINTR) continue; an_disconnect(); return -1; }
         if (n == 0) return -1;                     /* timeout                         */
-        n = recv(an_conn_fd, (char*)(buf + got), len - got, 0);
+        n = (int)recv(an_conn_fd, (char*)(buf + got), len - got, 0);
         if (n > 0) { got += n; continue; }
         if (n < 0 && sockerrno() == SOCK_EINTR) continue;
         an_disconnect();                         /* peer closed or error            */
@@ -321,13 +327,13 @@ static void an_drain(void)
     unsigned char scratch[64];
     fd_set rfds;
     struct timeval tv;
-    if (an_conn_fd < 0) return;
+    if (an_conn_fd == AN_INVALID_SOCKET) return;
     for (;;)
     {
         FD_ZERO(&rfds);
         FD_SET(an_conn_fd, &rfds);
         tv.tv_sec = 0; tv.tv_usec = 0;            /* poll, never block                   */
-        if (select(an_conn_fd + 1, &rfds, NULL, NULL, &tv) <= 0) break;
+        if (select((int)(an_conn_fd + 1), &rfds, NULL, NULL, &tv) <= 0) break;
         if (recv(an_conn_fd, (char*)scratch, sizeof scratch, 0) <= 0) break;
     }
 }
@@ -369,7 +375,7 @@ int AdamNet_DiskStatus(int dev, unsigned char* status_byte)
 {
     unsigned char pkt[6];
 
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
     if (an_send_byte(CMD(MN_STATUS, dev))) return -1;
 
     /* Device replies with a 6-byte status packet:
@@ -386,7 +392,7 @@ int AdamNet_ReadBlock(int dev, unsigned long block, unsigned char* buf)
     int r, len;
     struct timeval t0, t1;
 
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
 
     /* 1. Tell the device which block we want. */
     if (an_send_block_num(dev, block)) return -1;
@@ -436,7 +442,7 @@ static struct timeval an_rb_poll;   /* last time we actually touched the socket 
 
 int AdamNet_ReadBlockBegin(int dev, unsigned long block)
 {
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
     an_drain();                               /* resync from any prior transaction */
     if (an_send_block_num(dev, block)) return -1;
     if (an_send_byte(CMD(MN_RECEIVE, dev))) return -1;
@@ -452,7 +458,7 @@ int AdamNet_ReadBlockReady(int dev, unsigned char* buf)
     long us;
     int r, len;
 
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
 
     /* EOS spins reading the DCB status byte, calling us thousands of times per
        frame. Only actually touch the socket ~once per ms: a select()/recv() on
@@ -489,7 +495,7 @@ int AdamNet_ReadBlockReady(int dev, unsigned char* buf)
 
 int AdamNet_WriteBlock(int dev, unsigned long block, const unsigned char* buf)
 {
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
 
     /* 1. Block number. */
     if (an_send_block_num(dev, block)) return -1;
@@ -510,7 +516,7 @@ int AdamNet_WriteBlock(int dev, unsigned long block, const unsigned char* buf)
 int AdamNet_CharStatus(int dev, unsigned char* status_byte, unsigned* pending_len)
 {
     unsigned char pkt[6];
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
     if (an_send_byte(CMD(MN_STATUS, dev))) return -1;
     if (an_recv(pkt, 6, TMO_ACK)) return -1;
     if (pkt[0] != RESP(NR_STATUS, dev)) return -1;
@@ -521,7 +527,7 @@ int AdamNet_CharStatus(int dev, unsigned char* status_byte, unsigned* pending_le
 
 int AdamNet_CharWrite(int dev, const unsigned char* buf, int len)
 {
-    if (an_conn_fd < 0 || len < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET || len < 0) return -1;
     if (an_send_byte(CMD(MN_SEND, dev))) return -1;
     if (an_send_byte((unsigned char)((len >> 8) & 0xFF))) return -1;  /* length hi (BE) */
     if (an_send_byte((unsigned char)(len & 0xFF))) return -1;       /* length lo      */
@@ -536,7 +542,7 @@ int AdamNet_CharRead(int dev, unsigned char* buf, int maxlen, int* got)
     unsigned char hdr[3];
     int len, take, r;
     if (got) *got = 0;
-    if (an_conn_fd < 0) return -1;
+    if (an_conn_fd == AN_INVALID_SOCKET) return -1;
 
     /* 1. CONTROL.RECEIVE: the device stages its pending data (e.g. a JSON query
           result) into its response buffer and ACKs, or NACKs if nothing is ready.
@@ -575,7 +581,7 @@ int AdamNet_CharRead(int dev, unsigned char* buf, int maxlen, int* got)
 void AdamNet_ResetDevice(int dev)
 {
     int d;
-    if (an_conn_fd < 0) return;
+    if (an_conn_fd == AN_INVALID_SOCKET) return;
     if (dev == 0xFF)
     {
         for (d = 0; d < 16; ++d)

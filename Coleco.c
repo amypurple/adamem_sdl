@@ -11,6 +11,7 @@
 
 #include "Coleco.h"
 #include "AdamNet.h"
+#include "FujiCart.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -227,7 +228,10 @@ unsigned Z80_RDMEM (dword a)
 {
  int i;
  int OldBank;
- int retval=AddrTabl[a>>8][a&0xFF];
+ int retval;
+ /* FujiNet cartridge: its top 2K is a mailbox driven by reads */
+ if (FujiCart_On && a>=FUJICART_WINDOW) return FujiCart_Read (a);
+ retval=AddrTabl[a>>8][a&0xFF];
  if (CartBanks > 1 && a>=0xFFC0 && !EmuMode)
  {
      OldBank = CurrCartBank;
@@ -865,22 +869,37 @@ static void OutC0 (byte Val)
  JoyMode=1;
 }
 
+/* The SN76489AN holds READY low for 32 of its clocks after each write, and
+   READY drives the Z80 /WAIT line: the OUT instruction is stretched by about
+   31 T-states (MAME and Clock Signal model the same wait). */
+#define SN_WAIT_TSTATES 31
+
 static void OutE0 (byte Val)
 {
- byte Port;
+ int r;
  if(Val&0x80)
  {
-  Port=Val&0x70;
-  if((Port==0x00)||(Port==0x20)||(Port==0x40))
-  {
-   sound_data=Val;
-   DoSound(Port>>4,(Val&0x0F)|(sound_reg[Port>>4]&0x3F0));
-  }
+  /* Latch byte: remember the register for any following data byte,
+     whichever register it is (tone, volume or noise). */
+  sound_data=Val;
+  r=(Val>>4)&0x07;
+  if((r==0)||(r==2)||(r==4))
+   DoSound(r,(Val&0x0F)|(sound_reg[r]&0x3F0));
   else
-   DoSound(Port>>4,Val&0x0F);
+   DoSound(r,Val&0x0F);
  }
  else
-  DoSound((sound_data>>4)&0x07,(sound_data&0x0F)|((word)(Val&0x3F)<<4));
+ {
+  /* Data byte: tone registers get the upper 6 bits; volume and noise
+     registers get their low 4 bits updated. */
+  r=(sound_data>>4)&0x07;
+  if((r==0)||(r==2)||(r==4))
+   DoSound(r,(sound_reg[r]&0x0F)|((word)(Val&0x3F)<<4));
+  else
+   DoSound(r,Val&0x0F);
+ }
+ /* CPU is held while the sound chip latches the byte. */
+ Z80_ICount-=SN_WAIT_TSTATES;
 }
 
 typedef void (*OutPortFn) (byte Val);
@@ -2051,16 +2070,26 @@ int StartColeco(void)
   if (f)
   {
    fseek(f, 0L, SEEK_END);
-   CartSize = ftell(f);
+   CartSize = (int)ftell(f);
  
    if(CartSize > 1024*1024)
    {
        if(Verbose) printf("FAILED, Cartridge image is too big! (>1024kB)");
    } else {
      fseek(f, 0L, SEEK_SET);
-     j=fread(CART,1,CartSize,f);
+     j=(int)fread(CART,1,CartSize,f);
 
-     if (CartSize > 0x8000) // Bank Switching Cartridge 
+     if (!EmuMode && FujiCart_HasClaim (CART,CartSize))
+     {
+         /* FujiNet client: a flat 32K window plus APPBANK pages, served by
+            the cartridge (FujiCart.c), never a MegaCart */
+         CartBanks = 0;
+         CurrCartBank = 0;
+         if (!((CART[0]==0x55)&&(CART[1]==0xAA)) &&
+             !((CART[0]==0xAA)&&(CART[1]==0x55)))
+         { j=1;P="WARNING: NOT A VALID CARTRIDGE"; }
+     }
+     else if (CartSize > 0x8000) // Bank Switching Cartridge 
      {
          CartBanks = CartSize/(16*1024);
          CurrCartBank = CartBanks-1;
@@ -2126,7 +2155,7 @@ int StartColeco(void)
    f=fopen(ExpRomFile,"rb");
    if (f)
    {
-    j=fread(EXPROM,1,0x8000,f);
+    j=(int)fread(EXPROM,1,0x8000,f);
     fclose(f);
    }
    else P="NOT FOUND";
@@ -2231,7 +2260,7 @@ int StartColeco(void)
    }
    else
    {
-    if (CartSize > 0x8000) { // Bank Switch Cartridge
+    if (CartSize > 0x8000 && CartBanks > 1) { // Bank Switch Cartridge
         if (i<0xC000) {
             AddrTabl[i>>8]=&CART[CartSize-0x4000 + (i-0x8000)];
         }
@@ -2245,6 +2274,9 @@ int StartColeco(void)
    }
   }
  }
+
+ /* A FujiNet client image: the cartridge paints its mailbox and pages */
+ if (!EmuMode) FujiCart_Attach ();
 
  if (sgmmode)
  {
@@ -2312,6 +2344,7 @@ int StartColeco(void)
 void TrashColeco(void)
 {
  int i;
+ FujiCart_Shutdown ();
 #ifdef MSDOS
  if (InitDone)
   TrashMachine ();
@@ -2626,7 +2659,7 @@ static int diskread (unsigned p,int len,int block,FILE *f)
  int retval;
  if (fseek(f,block*512,SEEK_SET))
   return 0;
- retval=fread(io_buffer,1,len,f);
+ retval=(int)fread(io_buffer,1,len,f);
  for (i=0;i<retval;++i) RAM[(p+i)&0xFFFF]=io_buffer[i];
  return (retval==len);
 }
@@ -2987,6 +3020,13 @@ static void UpdateFujiNet (int mode,int dev_id,unsigned DCB)
      if (AdamNet_CharRead (dev,buf,count,&got)==0)
      {
       for (i=0;i<(unsigned)got;++i) RAM[(addr+i)&0xFFFF]=buf[i];
+      /* Write the actual transfer count back into the DCB length field, as
+         the real master 6801 does; clients (e.g. SmartBASIC FujiNet's NFRD)
+         read DCB+3/4 as "bytes transferred" after END_RD_CH. Leaving the
+         requested length here made short packets appear full-sized, so stale
+         buffer tails were consumed as fresh data. */
+      RAM[(DCB+3)&0xFFFF]=got&0xFF;
+      RAM[(DCB+4)&0xFFFF]=(got>>8)&0xFF;
       RAM[DCB]=0x80;
      }
      else RAM[DCB]=0x9B;
@@ -3368,12 +3408,55 @@ static int SpinnerInterrupt (void)
 }
 
 /****************************************************************************/
+/*** Install a cartridge image pushed by the FujiNet cartridge (the boot  ***/
+/*** swap): a claimed image keeps the mailbox, any other is a plain game. ***/
+/****************************************************************************/
+int Coleco_InstallCart (const byte *image,int size)
+{
+ int i;
+ if (!CART || size<=0 || size>1024*1024) return 0;
+ memcpy (CART,image,size);
+ if (size<0x8000) memset (CART+size,0xFF,0x8000-size);   /* no stale tail */
+ CartSize=size;
+ if (FujiCart_HasClaim (CART,CartSize))
+ {
+  CartBanks=0;
+  CurrCartBank=0;
+ }
+ else if (CartSize>0x8000)
+ {
+  CartBanks=CartSize/(16*1024);
+  CurrCartBank=CartBanks-1;
+ }
+ else
+ {
+  CartBanks=0;
+  CurrCartBank=0;
+ }
+ for (i=0x8000;i<0x10000;i+=256)
+ {
+  if (CartSize>0x8000 && CartBanks>1)
+   AddrTabl[i>>8]=&CART[CartSize-0x4000+((i<0xC000)? (i-0x8000):(i-0xC000))];
+  else
+   AddrTabl[i>>8]=&CART[i-0x8000];
+  WriteAddrTabl[i>>8]=DummyWriteTabl;
+ }
+ if (!FujiCart_Attach ()) FujiCart_On=0;
+ return 1;
+}
+
+/****************************************************************************/
 /*** This function is called every interrupt. It checks if a VDP or a     ***/
 /*** spinner interrupt should occur                                       ***/
 /****************************************************************************/
 int Z80_Interrupt (void)
 {
  int i;
+#ifdef SOUND
+ /* Let the audio thread know how far emulated time has advanced. */
+ SoundSync ();
+#endif
+ FujiCart_Poll ();
  for (i=0;i<4;++i)
  {
   if (disk_timeout[i])

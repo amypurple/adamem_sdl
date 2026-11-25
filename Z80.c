@@ -47,6 +47,8 @@ static Z80_Regs R;
 int Z80_Running=1;
 int Z80_IPeriod=50000;
 int Z80_ICount=50000;
+int Z80_M1Wait=0;            /* extra T-states per M1 (opcode fetch) cycle */
+unsigned Z80_CycleBase=0;     /* T-states at the start of the current slice */
 #ifdef DEBUG
 int Z80_Trace=0;
 int Z80_Trap=-1;
@@ -2211,7 +2213,7 @@ static opcode_fn opcode_fd[256]=
 static void cb(void)
 {
  unsigned opcode;
- ++R.R;
+ ++R.R; Z80_ICount-=Z80_M1Wait;
  opcode=M_RDOP(R.PC.D);
  R.PC.W.l++;
  Z80_ICount-=cycles_cb[opcode];
@@ -2220,7 +2222,7 @@ static void cb(void)
 static void dd(void)
 {
  unsigned opcode;
- ++R.R;
+ ++R.R; Z80_ICount-=Z80_M1Wait;
  opcode=M_RDOP(R.PC.D);
  R.PC.W.l++;
  Z80_ICount-=cycles_xx[opcode];
@@ -2229,7 +2231,7 @@ static void dd(void)
 static void ed(void)
 {
  unsigned opcode;
- ++R.R;
+ ++R.R; Z80_ICount-=Z80_M1Wait;
  opcode=M_RDOP(R.PC.D);
  R.PC.W.l++;
  Z80_ICount-=cycles_ed[opcode];
@@ -2238,7 +2240,7 @@ static void ed(void)
 static void fd (void)
 {
  unsigned opcode;
- ++R.R;
+ ++R.R; Z80_ICount-=Z80_M1Wait;
  opcode=M_RDOP(R.PC.D);
  R.PC.W.l++;
  Z80_ICount-=cycles_xx[opcode];
@@ -2293,7 +2295,7 @@ static void ei(void)
   if (Z80_Trace) Z80_Debug(&R);
 #endif
   R.IFF1=R.IFF2=1;
-  ++R.R;
+  ++R.R; Z80_ICount-=Z80_M1Wait;
   opcode=M_RDOP(R.PC.D);
   R.PC.W.l++;
   Z80_ICount-=cycles_main[opcode];
@@ -2458,7 +2460,7 @@ int Z80_Execute (void)
   if (Z80_Trace) Z80_Debug(&R);
   if (!Z80_Running) break;
 #endif
-  ++R.R;
+  ++R.R; Z80_ICount-=Z80_M1Wait;
   opcode=M_RDOP(R.PC.D);
 //  operand = Z80_RDMEM(R.PC.D+1)|(Z80_RDMEM(R.PC.D+2)<<8);
 //  if ((opcode_main[opcode] == call) && (operand == 0xfca8)) {
@@ -2476,6 +2478,7 @@ int Z80_Execute (void)
  }
  while (Z80_ICount>0);
  Z80_ICount+=Z80_IPeriod;
+ Z80_CycleBase+=Z80_IPeriod;
  Interrupt (Z80_Interrupt());
  return Z80_Running;
 }

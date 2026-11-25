@@ -20,6 +20,7 @@ void Sound (int r,int v);             /* Write a value to a sound register  */
 #ifdef SOUND_PSG
 void PSG_Sound (int r,int v);         /* Write a value to a PSG register    */
 #endif
+void SoundSync (void);                /* publish emulated time to the audio thread */
 #ifdef ADAM_SOUND_QUEUE
 void AdamSoundFrameTick (void);       /* advance sound-queue clock (per frame)*/
 #endif

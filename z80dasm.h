@@ -301,7 +301,7 @@ static int Z80_Dasm (unsigned char *buffer,char *dest,unsigned PC)
     sprintf (dest,"db     $%02x,$cb,$%02x",buffer[0],buffer[2]);
     return 2;
    case ' ':
-    k=strlen(dest);
+    k=(int)strlen(dest);
     if (k<6) k=7-k;
     else k=1;
     memset (buf,' ',k);

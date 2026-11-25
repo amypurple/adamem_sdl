@@ -66,7 +66,7 @@ static int OldTimer=0;                        /* Last value of timer            
 static int NewTimer=0;                        /* New value of timer                     */
 static int calloptions=0;                     /* If 1, OptionsDialogue() is called      */
 static int width,height;                      /* width & height of the frame buffer     */
-static float windowWidth, windowHeight;       /* width & height of the rendering window */
+static int windowWidth, windowHeight;         /* width & height of the rendering window */
 
 SMS_NTSC_IN_T* DisplayBuf;                    /* Screen buffer                          */
 char szJoystickFileName[256];                 /* File holding joystick information      */

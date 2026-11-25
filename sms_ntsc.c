@@ -32,6 +32,10 @@ sms_ntsc_setup_t const sms_ntsc_rgb        = { 0, 0, 0, 0,.2,  0,.70, -1, -1,-1,
 
 #include "sms_ntsc_impl.h"
 
+/* Output pixels are sms_ntsc_out_t (16 bits here): cast explicitly. */
+#undef SMS_NTSC_OUT_CAST
+#define SMS_NTSC_OUT_CAST (sms_ntsc_out_t)
+
 /* 3 input pixels -> 8 composite samples */
 pixel_info_t const sms_ntsc_pixels [alignment_count] = {
 	{ PIXEL_OFFSET( -4, -9 ), { 1, 1, .6667f, 0 } },

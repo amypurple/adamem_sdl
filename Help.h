@@ -22,6 +22,8 @@ char *HelpText[] =
   "                               adam - Coleco ADAM",
   "                               cv   - ColecoVision",
   "  -sgm <mode>                - Select Super Game Module Mode [0]",
+  "  -fujicart [-fc] <host:port> - FujiNet ColecoVision cartridge: fujinet-pc",
+  "                               Bus-over-IP endpoint, or off [127.0.0.1:9995]",
   "                                 0 - no SGM support   1 - SGM supported",
   "  -os7 <file>                - Select ColecoVision ROM image [OS7.rom]",
   "  -eos <file>                - Select EOS ROM image [EOS.rom]",

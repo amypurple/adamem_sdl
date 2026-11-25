@@ -15,6 +15,7 @@
 
 #include "Coleco.h"
 #include "AdamNet.h"
+#include "FujiCart.h"
 #ifdef MSDOS
 #include "MSDOS.h"
 #include <sys/stat.h>
@@ -51,6 +52,7 @@ char *Options[]=
   "cart","exprom", //52..53
   "idehda","idehdb","sgm","composite","NSDocumentRevisionsDebugMode", //54..58
   "fujinet", //59
+  "fujicart", //60
   NULL
 };
 
@@ -68,6 +70,7 @@ char *AbvOptions[]=
   "ct","er",
   "idea","ideb","sgm","comp","NSDoc",
   "fn", //59
+  "fc", //60
   NULL
 };
 
@@ -555,6 +558,14 @@ static int ParseOptions (int argc,char *argv[])
            else
                FujiNetPort = ADAMNET_DEFAULT_PORT;
            break;
+       case 60:                          /* -fujicart host:port|port|off   */
+           /* FujiNet ColecoVision cartridge: where fujinet-pc's Bus-over-IP
+              listener is. The cartridge itself switches on by itself for any
+              image carrying the FUJI claim. */
+           N++;
+           if (N>=argc || !FujiCart_SetEndpoint (argv[N]))
+               misparm=1;
+           break;
        default: printf("Wrong option '%s'\n",argv[N]);
              return 0;
    }
@@ -599,6 +610,14 @@ static int GetCartName (int argc,char *argv[])
               return 0;
              break;
 	case 36: case 37: case 56:
+             break;
+    case 59:                             /* -fujinet [port]: optional arg   */
+             if (N+1<argc && argv[N+1][0]>='0' && argv[N+1][0]<='9') N++;
+             break;
+    case 60:                             /* -fujicart host:port             */
+             N++;
+             if (N>=argc)
+              return 0;
              break;
     case 27: case 28: case 29: case 30:
              N++;
@@ -915,6 +934,9 @@ int main (int argc,char *argv[])
  if (CPUSpeed>1000) CPUSpeed=1000;
  if (CPUSpeed<10) CPUSpeed=10;
  Z80_IPeriod=(3579545*CPUSpeed)/(100*1000);
+ /* The ColecoVision board inserts one wait state in every M1 (opcode fetch)
+    cycle, as on the MSX (a 74LS74 on /M1 drives /WAIT). */
+ Z80_M1Wait=(EmuMode==0)? 1:0;
  if (PalNum<0) PalNum=0;
  if (PalNum>=NR_PALETTES) PalNum=NR_PALETTES-1;
 

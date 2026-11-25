@@ -121,6 +121,10 @@ void Z80_Debug(Z80_Regs *R);
 extern int Z80_Running;      /* When 0, emulation terminates                */
 extern int Z80_IPeriod;      /* Number of T-states per interrupt            */
 extern int Z80_ICount;       /* T-state count                               */
+extern int Z80_M1Wait;       /* extra T-states per M1 (opcode fetch) cycle */
+extern unsigned Z80_CycleBase; /* T-states at the start of the current slice */
+/* Running T-state counter (wraps at 2^32), used to timestamp sound writes */
+#define Z80_CyclesNow() (Z80_CycleBase+(unsigned)(Z80_IPeriod-Z80_ICount))
 extern int Z80_IRQ;          /* Current IRQ status. Checked after EI occurs */
 #define Z80_IGNORE_INT  -1   /* Ignore interrupt                            */
 #define Z80_NMI_INT     -2   /* Execute NMI                                 */

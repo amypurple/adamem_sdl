@@ -43,7 +43,7 @@ void Z80_Debug (Z80_Regs *R)
  }
  for (;i<5;++i) { buf[i]=Z80_RDOP_ARG((R->PC.D+i)&0xFFFF); }
  Z80_Dasm (buf,S,R->PC.D);
- for (i=strlen(S);i<19;++i) S[i]=' ';
+ for (i=(int)strlen(S);i<19;++i) S[i]=' ';
  S[19]='\0';
  for (i=7;i>=0;--i) { f[7-i]=(R->AF.D&(1<<i))? flags[7-i]:'.'; }
  f[8]='\0';
