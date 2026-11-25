@@ -16,6 +16,7 @@
 #include "Coleco.h"
 #include "AdamNet.h"
 #include "FujiCart.h"
+#include "F18A.h"
 #ifdef MSDOS
 #include "MSDOS.h"
 #include <sys/stat.h>
@@ -53,6 +54,7 @@ char *Options[]=
   "idehda","idehdb","sgm","composite","NSDocumentRevisionsDebugMode", //54..58
   "fujinet", //59
   "fujicart", //60
+  "vdp", //61
   NULL
 };
 
@@ -71,6 +73,7 @@ char *AbvOptions[]=
   "idea","ideb","sgm","comp","NSDoc",
   "fn", //59
   "fc", //60
+  "vdp", //61
   NULL
 };
 
@@ -134,6 +137,64 @@ static void ParseSpeakerChannels (char *p)
 }
 #endif
 
+/* Nonzero if name ends with ext (".ddp"), any letter case. */
+static int HasExtension (const char *name,const char *ext)
+{
+ size_t n=strlen(name),e=strlen(ext),i;
+ if (n<e) return 0;
+ for (i=0;i<e;++i)
+ {
+  char a=name[n-e+i],b=ext[i];
+  if (a>='A' && a<='Z') a=(char)(a-'A'+'a');
+  if (a!=b) return 0;
+ }
+ return 1;
+}
+
+/* Media files named without an option. A .ddp is an ADAM tape image and a
+   .dsk an ADAM disk image: each goes in the first drive of its kind that no
+   option has taken (normally drive 1). Options are parsed several times
+   (config files, then the command line), so a name already in a drive is
+   left alone. An explicit -tapeX / -diskX option counts as a mention: it
+   keeps its drive, and the unnamed image moves to the next free one. */
+static char *PositionalName[2]={NULL,NULL};   /* 0 tape, 1 disk */
+
+static char **MediaSlots (int kind)
+{
+ return kind? DiskName:TapeName;
+}
+
+/* An explicit option for drive d of kind (0 tape, 1 disk). */
+static void SetMediaOption (int kind,int d,char *name)
+{
+ char **slot=MediaSlots (kind);
+ int i;
+ if (slot[d] && slot[d]==PositionalName[kind] && strcmp (name,slot[d]))
+ {
+  for (i=0;i<4;++i)
+   if (i!=d && !slot[i]) { slot[i]=PositionalName[kind]; break; }
+ }
+ slot[d]=name;
+}
+
+/* Returns nonzero if name was taken as a tape or disk image. */
+static int PositionalMedia (char *name)
+{
+ char **slot;
+ int kind,i;
+ if (HasExtension (name,".ddp")) kind=0;
+ else if (HasExtension (name,".dsk")) kind=1;
+ else return 0;
+ slot=MediaSlots (kind);
+ PositionalName[kind]=name;
+ for (i=0;i<4;++i)
+  if (slot[i] && !strcmp (slot[i],name)) return 1;
+ for (i=0;i<4;++i)
+  if (!slot[i]) { slot[i]=name; return 1; }
+ printf ("No free %s drive for '%s'\n",kind? "disk":"tape",name);
+ return 1;
+}
+
 static int ParseOptions (int argc,char *argv[])
 {
  int N,I,J,tmp;
@@ -142,7 +203,9 @@ static int ParseOptions (int argc,char *argv[])
  {
   misparm=0;
   if(*argv[N]!='-')
-   switch(I++)
+   if (PositionalMedia (argv[N]))
+    ;                                  /* a .ddp or .dsk: a drive, not the cartridge */
+   else switch(I++)
    {
     case 0:  CartName=argv[N];
              break;
@@ -170,7 +233,9 @@ static int ParseOptions (int argc,char *argv[])
 					 "SDL Driver Copyright (C) 2006-2020 Geoff Oltmans\n"
 #endif
 					 "Usage: %s [-option1 [-option2...]] [filename]\n"
-                     "[filename] = name of the file to load as a cartridge [CART.ROM]\n"
+                     "[filename] = name of the file to load as a cartridge [CART.ROM],\n"
+                     "             a .ddp tape image or a .dsk disk image (first free\n"
+                     "             drive of that kind)\n"
                      "[-option]  =\n",Title,ProgramName);
              tmp=5;
              for(J=0;HelpText[J];J++)
@@ -267,14 +332,14 @@ static int ParseOptions (int argc,char *argv[])
     case 27: case 28: case 29: case 30:
              N++;
              if(N<argc)
-              DiskName[J-27]=argv[N];
+              SetMediaOption (1,J-27,argv[N]);
              else
               return 0;
              break;
     case 31: case 32: case 33: case 34:
              N++;
              if(N<argc)
-              TapeName[J-31]=argv[N];
+              SetMediaOption (0,J-31,argv[N]);
              else
               return 0;
              break;
@@ -566,6 +631,20 @@ static int ParseOptions (int argc,char *argv[])
            if (N>=argc || !FujiCart_SetEndpoint (argv[N]))
                misparm=1;
            break;
+       case 61:                          /* -vdp tms9918|f18a              */
+           N++;
+           if (N>=argc)
+               misparm=1;
+           else if (!strcmp (argv[N],"f18a"))
+               F18A_On=1;
+           else if (!strcmp (argv[N],"tms9918") || !strcmp (argv[N],"tms9918a"))
+               F18A_On=0;
+           else
+           {
+               printf("-vdp: use tms9918 or f18a\n");
+               return 0;
+           }
+           break;
        default: printf("Wrong option '%s'\n",argv[N]);
              return 0;
    }
@@ -585,7 +664,9 @@ static int GetCartName (int argc,char *argv[])
  for(N=1,I=0;N<argc;N++)
  {
   if(*argv[N]!='-')
-   switch(I++)
+   if (PositionalMedia (argv[N]))
+    ;                                  /* a .ddp or .dsk: a drive, not the cartridge */
+   else switch(I++)
    {
     case 0:  CartName=argv[N];
              CartNameSupplied=1;
@@ -615,6 +696,7 @@ static int GetCartName (int argc,char *argv[])
              if (N+1<argc && argv[N+1][0]>='0' && argv[N+1][0]<='9') N++;
              break;
     case 60:                             /* -fujicart host:port             */
+    case 61:                             /* -vdp tms9918|f18a               */
              N++;
              if (N>=argc)
               return 0;
@@ -622,14 +704,14 @@ static int GetCartName (int argc,char *argv[])
     case 27: case 28: case 29: case 30:
              N++;
              if(N<argc)
-              DiskName[J-27]=argv[N];
+              SetMediaOption (1,J-27,argv[N]);
              else
               return 0;
              break;
     case 31: case 32: case 33: case 34:
              N++;
              if(N<argc)
-              TapeName[J-31]=argv[N];
+              SetMediaOption (0,J-31,argv[N]);
              else
               return 0;
              break;

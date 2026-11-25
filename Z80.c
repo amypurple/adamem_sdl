@@ -49,6 +49,8 @@ int Z80_IPeriod=50000;
 int Z80_ICount=50000;
 int Z80_M1Wait=0;            /* extra T-states per M1 (opcode fetch) cycle */
 unsigned Z80_CycleBase=0;     /* T-states at the start of the current slice */
+unsigned Z80_EventAt=0;       /* T-state of the next device event        */
+int Z80_EventOn=0;            /* 1 if Z80_EventAt is armed               */
 #ifdef DEBUG
 int Z80_Trace=0;
 int Z80_Trap=-1;
@@ -473,7 +475,12 @@ static void halt(void)
 {
  --R.PC.W.l;
  R.HALT=1;
- if (Z80_ICount>0) Z80_ICount=0;
+ if (Z80_ICount>0)
+ {
+  /* Stop burning the slice at the armed event, so it fires on time */
+  int left=Z80_EventOn? (int)(Z80_EventAt-Z80_CyclesNow()):0;
+  Z80_ICount=(left>0 && left<Z80_ICount)? Z80_ICount-left:0;
+ }
 }
 
 static void im_0(void) { R.IM=0; }
@@ -2475,6 +2482,11 @@ int Z80_Execute (void)
   R.PC.W.l++;
   Z80_ICount-=cycles_main[opcode];
   (*(opcode_main[opcode]))();
+  if (Z80_EventOn && (int)(Z80_CyclesNow()-Z80_EventAt)>=0)
+  {
+   Z80_EventOn=0;
+   Interrupt (Z80_Event());
+  }
  }
  while (Z80_ICount>0);
  Z80_ICount+=Z80_IPeriod;

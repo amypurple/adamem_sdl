@@ -20,7 +20,7 @@ if not exist build mkdir build
 cl /nologo /O2 /MD /W3 /wd4996 /I IDE /I "%SDL2_DIR%\include" ^
  /D WIN32 /D _CRT_SECURE_NO_WARNINGS /D LSB_FIRST /D SDL /D SOUND /D SOUND_PSG ^
  /D IDEHD /D DEBUG /D TEXT80 /D WINDOWS_HOST ^
- ADAMEm.c AdamemSDL.c AdamNet.c FujiCart.c AdamSDLSound_2.c Bitmap.c Coleco.c ^
+ ADAMEm.c AdamemSDL.c AdamNet.c FujiCart.c F18A.c AdamSDLSound_2.c Bitmap.c Coleco.c ^
  IDE\HarddiskIDE.c sms_ntsc.c Sound.c Z80.c Z80Debug.c ^
  /Fo:build\ /Fe:build\adamem.exe ^
  /link /SUBSYSTEM:CONSOLE /LIBPATH:"%SDL2_DIR%\lib\x64" SDL2.lib SDL2main.lib ws2_32.lib shell32.lib

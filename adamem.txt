@@ -133,6 +133,12 @@ F10                     -  Quit emulator
 
 Command line options
 ====================
+A file named without an option is loaded as the cartridge, except:
+  .ddp - an ADAM tape image: it goes in the first tape drive that no
+         -tapea..-taped option has taken (normally tape drive 1)
+  .dsk - an ADAM disk image: it goes in the first disk drive that no
+         -diska..-diskd option has taken (normally disk drive 1)
+
 General options:
 -help                  -  Print a help page describing the available
                           options
@@ -140,6 +146,8 @@ General options:
                             0 - Silent          1 - Startup messages
                             2 - VDP             4 - Memory mapper
                             8 - Tape&Disk      16 - PCB
+                           32 - Writes to ROM, unused I/O ports and
+                                unhandled SDL events
                           128 - Illegal Z80 ops
 -adam / -cv            -  Select emulation model
                           -adam - Coleco ADAM
@@ -291,6 +299,18 @@ Video options:
 			  SDL version:
 			  1 - 256x212    2 - 256x424
 			  3 - 1280x720   4 - 1920x1080
+-vdp <chip>            -  Select the video chip [tms9918]
+                          tms9918 - TMS9918A
+                          f18a    - F18A: after the unlock sequence, the
+                          64-colour palette, ECM tile and sprite modes, a
+                          second tile layer, the bitmap layer, scrolling,
+                          30 rows, 80 columns, the line interrupt, the
+                          status registers, and the GPU (100 MHz, with
+                          PIX and DMA). Drawn one line at a time, so
+                          mid-screen changes show. The GPU starts idle:
+                          the F18A's power-on GPU firmware is not
+                          included. The NTSC filter and screen shots are
+                          not available with the F18A.
 -palette <mode>        -  Select colour palette to be used [0]
                           0 - Default
                           1 - V9938

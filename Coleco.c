@@ -12,6 +12,7 @@
 #include "Coleco.h"
 #include "AdamNet.h"
 #include "FujiCart.h"
+#include "F18A.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -221,37 +222,141 @@ static void SetPCBTable (unsigned oldPCB)
 }
 
 /****************************************************************************/
+/*** Cartridge mappers (Gearcoleco-compatible)                            ***/
+/***  - "FUJI" claim at 7CFCH (ColecoVision): FujiNet APPBANK (FujiCart.c)***/
+/***  - > 32K with its 55AA/AA55 header in the last 16K: MegaCart. 8000H- ***/
+/***    BFFFH is fixed to the last 16K; C000H-FFFFH shows bank 0 at power-***/
+/***    on; any read OR write of FFC0H-FFFFH selects bank                 ***/
+/***    (address & 3FH) & (banks-1). Same in ColecoVision and ADAM modes. ***/
+/***  - > 32K with its header at the start: Activision board. 8000H-BFFFH ***/
+/***    fixed to bank 0, C000H-FFFFH bank 0 at power-on; a WRITE of       ***/
+/***    exactly FF90H, FFA0H or FFB0H selects bank (addr>>4) & (banks-1). ***/
+/***    (Its I2C EEPROM at FF80H/FFC0H is not emulated.)                  ***/
+/***  - anything else: flat.                                              ***/
+/****************************************************************************/
+#define MAPPER_FLAT       0
+#define MAPPER_MEGACART   1
+#define MAPPER_ACTIVISION 2
+static int CartMapper=MAPPER_FLAT;
+
+static int CartHeaderAt (int off)
+{
+ return (CART[off]==0x55 && CART[off+1]==0xAA) ||
+        (CART[off]==0xAA && CART[off+1]==0x55);
+}
+
+/* Decide the mapper of the image in CART. Returns a warning or NULL.
+   Same order as Gearcoleco's Cartridge::GatherMetadata: a header at offset 0
+   decides first (FujiNet claim, else flat up to 32K, else Activision -- even
+   if the last bank has a header too); only an image with no header at 0 is
+   checked for a MegaCart header in its last 16K. */
+static const char *DetectCartMapper (void)
+{
+ CartBanks=0;
+ CurrCartBank=0;
+ CartMapper=MAPPER_FLAT;
+ if (CartHeaderAt (0))
+ {
+  if (!EmuMode && FujiCart_HasClaim (CART,CartSize)) return NULL;
+  if (CartSize<=0x8000) return NULL;
+  CartBanks=(CartSize+0x3FFF)/0x4000;
+  CartMapper=MAPPER_ACTIVISION;
+  return NULL;
+ }
+ if (CartSize>0x8000 && CartHeaderAt (CartSize-0x4000))
+ {
+  CartBanks=(CartSize+0x3FFF)/0x4000;
+  CartMapper=MAPPER_MEGACART;
+  if (CartSize&(CartSize-1))
+   return "NOTE: MegaCart image whose size is not a power of two";
+  return NULL;
+ }
+ return "WARNING: NOT A VALID CARTRIDGE";
+}
+
+/* Is the cartridge currently visible at 8000H-FFFFH? (ADAM: memory map) */
+static int CartMapped (void)
+{
+ return !EmuMode || (CurrMemSel&12)==12;
+}
+
+/* Map 8000H-FFFFH from the cartridge state. */
+static void MapCartridge (void)
+{
+ int i;
+ for (i=0x8000;i<0x10000;i+=256)
+ {
+  if (CartMapper==MAPPER_MEGACART)
+   AddrTabl[i>>8]=(i<0xC000)? &CART[CartSize-0x4000+(i-0x8000)]
+                            : &CART[CurrCartBank*0x4000+(i-0xC000)];
+  else if (CartMapper==MAPPER_ACTIVISION)
+   AddrTabl[i>>8]=(i<0xC000)? &CART[i-0x8000]
+                            : &CART[CurrCartBank*0x4000+(i-0xC000)];
+  else
+   AddrTabl[i>>8]=&CART[i-0x8000];
+  WriteAddrTabl[i>>8]=DummyWriteTabl;
+ }
+ if (!EmuMode) FujiCart_Attach ();
+}
+
+/* Select bank at C000H-FFFFH. */
+static void CartSelectBank (int bank)
+{
+ int i;
+ if (bank==CurrCartBank) return;
+ CurrCartBank=bank;
+ if (!CartMapped ()) return;
+ for (i=0xC000;i<0x10000;i+=256)
+  AddrTabl[i>>8]=&CART[CurrCartBank*0x4000+(i-0xC000)];
+}
+
+/* Console reset: the bank goes back to 0, as in Gearcoleco. */
+static void CartResetBank (void)
+{
+ if (CartMapper==MAPPER_FLAT) return;
+ CartSelectBank (0);
+}
+
+/* A MegaCart hotspot access (read or write of FFC0H-FFFFH). */
+static void MegaCartSelect (unsigned a)
+{
+ CartSelectBank ((int)((a&0x3F)&(unsigned)(CartBanks-1)));
+}
+
+/* A write to an Activision board's bank register (FF90H/FFA0H/FFB0H). */
+static void ActivisionSelect (unsigned a)
+{
+ CartSelectBank ((int)((a>>4)&(unsigned)(CartBanks-1)));
+}
+
+/****************************************************************************/
 /*** Function to read/write memory. They check for memory protection and  ***/
 /*** reads and writes to the PCB/DCB area                                 ***/
 /****************************************************************************/
 unsigned Z80_RDMEM (dword a)
 {
- int i;
- int OldBank;
  int retval;
  /* FujiNet cartridge: its top 2K is a mailbox driven by reads */
  if (FujiCart_On && a>=FUJICART_WINDOW) return FujiCart_Read (a);
+ if (CartMapper==MAPPER_MEGACART && a>=0xFFC0 && CartMapped ()) MegaCartSelect (a);
  retval=AddrTabl[a>>8][a&0xFF];
- if (CartBanks > 1 && a>=0xFFC0 && !EmuMode)
- {
-     OldBank = CurrCartBank;
-     CurrCartBank = (a-0xffc0)%CartBanks;
-     if (OldBank != CurrCartBank)
-     {
-         for (i = 0xC000; i<0xFFFF; i+=256) { //Update the upper bank contents
-             AddrTabl[i>>8] = &CART[i-0xC000 + (CurrCartBank*16*1024) ];
-         }
-     }
- }
  if (PCBTable[a]) ReadPCB (a);
  return retval;
 }
 void Z80_WRMEM (dword a,byte v)
 {
+ /* the cartridge sees writes too (no /WR on the connector) */
+ if (a>=0xFF90 && CartMapped ())
+ {
+  if (CartMapper==MAPPER_MEGACART)
+  { if (a>=0xFFC0) MegaCartSelect (a); }
+  else if (CartMapper==MAPPER_ACTIVISION && (a==0xFF90 || a==0xFFA0 || a==0xFFB0))
+   ActivisionSelect (a);
+ }
  WriteAddrTabl[a>>8][a&0xFF]=v;
  if (PCBTable[a]) WritePCB (a);
 #ifdef PRINT_MEM
- if (WriteAddrTabl[a>>8]==DummyWriteTabl)
+ if ((Verbose&32) && WriteAddrTabl[a>>8]==DummyWriteTabl)
   printf ("Wrote %02X to %04X at %04X\n",v,a,Z80_GetPC());
 #endif
 }
@@ -393,21 +498,21 @@ static void Out07 (byte Val) // IDE - Command
 static void Out0C (byte Val)
 {
 #ifdef PRINT_IO
-    printf("write 0c: %d\n",Val);
+    if (Verbose&32) printf("write 0c: %d\n",Val);
 #endif
 }
 
 static void Out0D (byte Val)
 {
 #ifdef PRINT_IO
-    printf("write 0d: %d\n",Val);
+    if (Verbose&32) printf("write 0d: %d\n",Val);
 #endif
 }
 
 static void Out0E (byte Val)
 {
 #ifdef PRINT_IO
-    printf("write 0e: %d\n",Val);
+    if (Verbose&32) printf("write 0e: %d\n",Val);
 #endif
     usartModeReg[usartWMRIndex++] = Val;
     if (usartWMRIndex > 1)
@@ -417,7 +522,7 @@ static void Out0E (byte Val)
 static void Out0F (byte Val)
 {
 #ifdef PRINT_IO
-    printf("write 0f: %d\n",Val);
+    if (Verbose&32) printf("write 0f: %d\n",Val);
 #endif
     usartCmdReg = Val;
 }
@@ -425,14 +530,14 @@ static void Out0F (byte Val)
 static void Out10 (byte Val)
 {
 #ifdef PRINT_IO
-    printf("Write - MIB2 Serial Port 2 - %02X\n",Val);
+    if (Verbose&32) printf("Write - MIB2 Serial Port 2 - %02X\n",Val);
 #endif
 }
 
 static void Out18 (byte Val)
 {
 #ifdef PRINT_IO
-    printf("Write - MIB2 Serial Port 1 - %02X\n",Val);
+    if (Verbose&32) printf("Write - MIB2 Serial Port 1 - %02X\n",Val);
 #endif
 }
 
@@ -533,14 +638,14 @@ static void Out42 (byte Val)
 static void Out44 (byte Val)
 {
 #ifdef PRINT_IO
-    printf("Write - Orphanware Serial Port 1 - %02X\n",Val);
+    if (Verbose&32) printf("Write - Orphanware Serial Port 1 - %02X\n",Val);
 #endif
 }
 
 static void Out4C (byte Val)
 {
 #ifdef PRINT_IO
-    printf("Write - Orphanware Serial Port 2 - %02X\n",Val);
+    if (Verbose&32) printf("Write - Orphanware Serial Port 2 - %02X\n",Val);
 #endif
 }
 
@@ -593,7 +698,7 @@ static void Out53 (byte Val)
 static void Out54 (byte Val)
 {
 #ifdef PRINT_IO
-    printf("Write - Orphanware Serial Port 3 - %02X\n",Val);
+    if (Verbose&32) printf("Write - Orphanware Serial Port 3 - %02X\n",Val);
 #endif
 }
 
@@ -635,7 +740,7 @@ static void Out5A (byte Val)
 static void Out5C (byte Val)
 {
 #ifdef PRINT_IO
-    printf("Write - Orphanware Serial Port 4 - %02X\n",Val);
+    if (Verbose&32) printf("Write - Orphanware Serial Port 4 - %02X\n",Val);
 #endif
 }
 
@@ -766,11 +871,8 @@ static void Out60 (byte Val)
     break;
    case 12:
     if (Verbose&4) puts (" Upper 32K:Cartridge ROM");
-    for (i=32768;i<65536;i+=256)
-    {
-     AddrTabl[i>>8]=&CART[i-32768 + (CurrCartBank*16*1024)];
-     WriteAddrTabl[i>>8]=DummyWriteTabl;
-    }
+    CurrMemSel=(CurrMemSel&~12)|12;   /* (MapCartridge asks CartMapped) */
+    MapCartridge ();
     break;
   }
  }
@@ -813,6 +915,7 @@ static void Out80 (byte Val)
 
 static void OutA0 (byte Val)
 {
+ if (F18A_On) { F18A_WriteData (Val); return; }
  if (!VDP.Mode) ++VDP.Addr;
  if (VDP.VRAM[VDP.Addr&VDP.VRAMSize]!=Val)
  {
@@ -825,6 +928,7 @@ static void OutA0 (byte Val)
 
 static void OutA1 (byte Val)
 {
+ if (F18A_On) { F18A_WriteCtrl (Val); return; }
  if (VDP.VKey)
  {
   VDP.VR=Val;
@@ -946,7 +1050,7 @@ void FASTCALL Z80_Out (unsigned Port,byte Val)
  Port&=0xff;
  fn=OutPort[Port];
 #ifdef PRINT_IO
- if (fn==OutNo)
+ if ((Verbose&32) && fn==OutNo)
  {
   printf ("Attempt to write %02X to port %02X at %04X\n",Val,Port,Z80_GetPC());
   Z80_RegisterDump ();
@@ -1058,7 +1162,7 @@ static byte Inp07 (void) // IDE - Status
 static byte Inp08 (void)
 {
 #ifdef PRINT_IO
-    printf("in 08\n");
+    if (Verbose&32) printf("in 08\n");
 #endif
     return 0x80;
 }
@@ -1066,7 +1170,7 @@ static byte Inp08 (void)
 static byte Inp09 (void)
 {
 #ifdef PRINT_IO
-    printf("in 09\n");
+    if (Verbose&32) printf("in 09\n");
 #endif
     return 0x80;
 }
@@ -1076,7 +1180,7 @@ static byte Inp0A (void)
     byte temp;
     
 #ifdef PRINT_IO
-    printf("in 0a\n");
+    if (Verbose&32) printf("in 0a\n");
 #endif
     temp = usartModeReg[usartRMRIndex++];
     if (usartRMRIndex > 1)
@@ -1087,7 +1191,7 @@ static byte Inp0A (void)
 static byte Inp0B (void)
 {
 #ifdef PRINT_IO
-    printf("in 0b\n");
+    if (Verbose&32) printf("in 0b\n");
 #endif
     return usartCmdReg;
 }
@@ -1095,7 +1199,7 @@ static byte Inp0B (void)
 static byte Inp10 (void)
 {
 #ifdef PRINT_IO
-    printf("Read - MIB2 Serial Port 2\n");
+    if (Verbose&32) printf("Read - MIB2 Serial Port 2\n");
 #endif
     return Z80_RDMEM((Z80_GetPC()-1)&65535);
 }
@@ -1103,7 +1207,7 @@ static byte Inp10 (void)
 static byte Inp18 (void)
 {
 #ifdef PRINT_IO
-    printf("Read - MIB2 Serial Port 1\n");
+    if (Verbose&32) printf("Read - MIB2 Serial Port 1\n");
 #endif
     return Z80_RDMEM((Z80_GetPC()-1)&65535);
 }
@@ -1121,7 +1225,7 @@ static byte Inp40 (void)
 static byte Inp44 (void)
 {
 #ifdef PRINT_IO
-    printf("Read - Orphanware Serial Port 1\n");
+    if (Verbose&32) printf("Read - Orphanware Serial Port 1\n");
 #endif
     return Z80_RDMEM((Z80_GetPC()-1)&65535);
 }
@@ -1129,7 +1233,7 @@ static byte Inp44 (void)
 static byte Inp4C (void)
 {
 #ifdef PRINT_IO
-    printf("Read - Orphanware Serial Port 2\n");
+    if (Verbose&32) printf("Read - Orphanware Serial Port 2\n");
 #endif
     return Z80_RDMEM((Z80_GetPC()-1)&65535);
 }
@@ -1152,7 +1256,7 @@ static byte Inp53 (void)
 static byte Inp54 (void)
 {
 #ifdef PRINT_IO
-    printf("Read - Orphanware Serial Port 3\n");
+    if (Verbose&32) printf("Read - Orphanware Serial Port 3\n");
 #endif
     return Z80_RDMEM((Z80_GetPC()-1)&65535);
 }
@@ -1212,7 +1316,7 @@ static byte Inp5B (void)
 static byte Inp5C (void)
 {
 #ifdef PRINT_IO
-    printf("Read - Orphanware Serial Port 4\n");
+    if (Verbose&32) printf("Read - Orphanware Serial Port 4\n");
 #endif
     return Z80_RDMEM((Z80_GetPC()-1)&65535);
 }
@@ -1235,6 +1339,7 @@ static byte Inp60 (void)
 static byte InpA0 (void)
 {
  byte retval;
+ if (F18A_On) return F18A_ReadData ();
  retval=VDP.VRAM[VDP.Addr&VDP.VRAMSize];
  VDP.Addr++;
  VDP.VKey=1;
@@ -1244,6 +1349,7 @@ static byte InpA0 (void)
 static byte InpA1 (void)
 {
  byte retval;
+ if (F18A_On) return F18A_ReadStatus ();
  retval=VDP.Status;
  if (VDP.Status & 0x80)
   VDP.Status&=0x3F;
@@ -1338,7 +1444,7 @@ byte FASTCALL Z80_In (unsigned Port)
  Port&=0xff;
  fn=InPort[Port];
 #ifdef PRINT_IO
- if (fn==InpNo)
+ if ((Verbose&32) && fn==InpNo)
  {
   printf ("Attempt to read port %02X at %04X\n",Port,Z80_GetPC());
   Z80_RegisterDump ();
@@ -1351,10 +1457,21 @@ byte FASTCALL Z80_In (unsigned Port)
 /****************************************************************************/
 /*** Reset the Coleco                                                     ***/
 /****************************************************************************/
+static int MachineIsAdam=-1;         /* -1 until the first reset            */
+
 void ResetColeco (int mode)
 {
  static byte VDPInit[8] = { 0x00,0x80,0x06,0x80,0x00,0x36,0x07,0x00 };
+ /* The machine chosen at start-up (-adam / -cv). The first call comes from
+    StartColeco, before anything has changed EmuMode. On an ADAM the
+    cartridge lever (mode 1) runs the cartridge as a ColecoVision; the
+    other resets bring back the machine that was started -- a ColecoVision
+    stays a ColecoVision (this used to force EmuMode=1, so a -cv session
+    ran with the ADAM flag on: MegaCart bank switching and the SGM's port
+    7FH were dead). */
  int i;
+ if (MachineIsAdam<0) MachineIsAdam=EmuMode? 1:0;
+ CartResetBank ();
 
  Z80_Out (0x53,0);                   /* If SGM mode, disable addt'l RAM */
  if (mode==1)
@@ -1367,7 +1484,7 @@ void ResetColeco (int mode)
   return;
  }
 
- EmuMode = 1;
+ EmuMode = MachineIsAdam;
  for (i=0;i<8;++i) VDP.Reg[i]=VDPInit[i];
  VDP.VRAMSize=0x3FFF;
  VDP.VKey=1;
@@ -1383,6 +1500,7 @@ void ResetColeco (int mode)
   RAM[i+1]=0xFF;
  }
  Z80_Reset ();                        /* Reset the Z80 emulator             */
+ if (F18A_On) F18A_Reset ();
  JoyMode=0;                           /* Select joystick mode               */
  NMI_Line=0;                          /* Clear NMI line                     */
  if (EmuMode)
@@ -1704,6 +1822,9 @@ static int GetSnapshotParams (FILE *f)
  i=buf[0]*256+buf[1];
  if (i>0x100) return -3;                        /* Version not supported    */
  if (fread(buf,1,1,f)!=1) return -1;
+ /* The snapshot chooses the machine (this runs before the first reset).
+    Note: ColecoVision snapshots saved before the ResetColeco fix store 1
+    here, so they come back as an ADAM; re-save them. */
  EmuMode=buf[0];
  if (fread(buf,1,1,f)!=1) return -1;
  RAMPages=buf[0];
@@ -1805,6 +1926,8 @@ static int GetSnapshotData (FILE *f)
  PCB=(buf[1]<<8)+buf[2];
  if (fread(VDP.VRAM,1,16384,f)!=16384) return -1;
  if (fread(RAM,1,RAMSize,f)!=RAMSize) return -1;
+ /* F18A state follows; a snapshot without it restarts the F18A */
+ if (F18A_On && F18A_LoadState (f)) F18A_Reset ();
  return 1;
 }
 
@@ -1908,6 +2031,7 @@ static int _SaveSnapshotFile (FILE *f)
  if (fwrite(buf,1,3,f)!=3) return -2;
  if (fwrite(VDP.VRAM,1,16384,f)!=16384) return -2;
  if (fwrite(RAM,1,RAMSize,f)!=RAMSize) return -2;
+ if (F18A_On && F18A_SaveState (f)) return -2;
  return 1;
 }
 
@@ -2028,6 +2152,7 @@ int StartColeco(void)
  {
      CART=malloc(1024*1024);
  }
+ if (CART) memset (CART,0xFF,1024*1024);  /* ROM space past the image reads FF */
     
  if (EmuMode)
  {
@@ -2079,30 +2204,11 @@ int StartColeco(void)
      fseek(f, 0L, SEEK_SET);
      j=(int)fread(CART,1,CartSize,f);
 
-     if (!EmuMode && FujiCart_HasClaim (CART,CartSize))
-     {
-         /* FujiNet client: a flat 32K window plus APPBANK pages, served by
-            the cartridge (FujiCart.c), never a MegaCart */
-         CartBanks = 0;
-         CurrCartBank = 0;
-         if (!((CART[0]==0x55)&&(CART[1]==0xAA)) &&
-             !((CART[0]==0xAA)&&(CART[1]==0x55)))
-         { j=1;P="WARNING: NOT A VALID CARTRIDGE"; }
-     }
-     else if (CartSize > 0x8000) // Bank Switching Cartridge 
-     {
-         CartBanks = CartSize/(16*1024);
-         CurrCartBank = CartBanks-1;
-         if (!((CART[CartSize - 0x4000]==0x55)&&(CART[CartSize - 0x3FFF]==0xAA)) &&
-             !((CART[CartSize - 0x4000]==0xAA)&&(CART[CartSize - 0x3FFF]==0x55)))
-         { j=1;P="WARNING: NOT A VALID CARTRIDGE"; }
-         
-     } else {
-         if (!((CART[0]==0x55)&&(CART[1]==0xAA)) &&
-             !((CART[0]==0xAA)&&(CART[1]==0x55)))
-         { j=1;P="WARNING: NOT A VALID CARTRIDGE"; }
-     }
-
+     P=(char *)DetectCartMapper ();
+     if (P && Verbose) { printf ("\n  %s\n  ",P); P=NULL; }
+     if (CartMapper!=MAPPER_FLAT && Verbose)
+      printf ("%s, %d banks of 16K... ",
+              CartMapper==MAPPER_MEGACART? "MegaCart":"Activision",CartBanks);
    }
    fclose(f);
   }
@@ -2260,23 +2366,14 @@ int StartColeco(void)
    }
    else
    {
-    if (CartSize > 0x8000 && CartBanks > 1) { // Bank Switch Cartridge
-        if (i<0xC000) {
-            AddrTabl[i>>8]=&CART[CartSize-0x4000 + (i-0x8000)];
-        }
-        else {
-            AddrTabl[i>>8]=&CART[CartSize-0x4000 + (i-0xc000)];
-        }
-    } else {
-        AddrTabl[i>>8]=&CART[i-0x8000];
-    }
+    AddrTabl[i>>8]=&CART[i-0x8000];   /* MapCartridge (below) decides */
     WriteAddrTabl[i>>8]=DummyWriteTabl;
    }
   }
  }
 
- /* A FujiNet client image: the cartridge paints its mailbox and pages */
- if (!EmuMode) FujiCart_Attach ();
+ /* the cartridge's mapper (MegaCart, FujiNet APPBANK or flat) */
+ if (!EmuMode) MapCartridge ();
 
  if (sgmmode)
  {
@@ -3353,6 +3450,14 @@ static int VDP_Interrupt(void)
     dorefresh=0;
    break;
  }
+ if (F18A_On)
+ {
+  /* The F18A raises its own NMI on the right line (F18A_Event); here
+     only show the last complete frame */
+  F18A_Sync ();
+  if (dorefresh) RefreshScreen (F18A_ScreenChanged ());
+  return Z80_IGNORE_INT;
+ }
  if (VDP.VKey)
  {
   /* Update VDP status reg */
@@ -3413,35 +3518,16 @@ static int SpinnerInterrupt (void)
 /****************************************************************************/
 int Coleco_InstallCart (const byte *image,int size)
 {
- int i;
+ const char *w;
  if (!CART || size<=0 || size>1024*1024) return 0;
  memcpy (CART,image,size);
- if (size<0x8000) memset (CART+size,0xFF,0x8000-size);   /* no stale tail */
+ memset (CART+size,0xFF,1024*1024-size);   /* past the image: FF */
  CartSize=size;
- if (FujiCart_HasClaim (CART,CartSize))
- {
-  CartBanks=0;
-  CurrCartBank=0;
- }
- else if (CartSize>0x8000)
- {
-  CartBanks=CartSize/(16*1024);
-  CurrCartBank=CartBanks-1;
- }
- else
- {
-  CartBanks=0;
-  CurrCartBank=0;
- }
- for (i=0x8000;i<0x10000;i+=256)
- {
-  if (CartSize>0x8000 && CartBanks>1)
-   AddrTabl[i>>8]=&CART[CartSize-0x4000+((i<0xC000)? (i-0x8000):(i-0xC000))];
-  else
-   AddrTabl[i>>8]=&CART[i-0x8000];
-  WriteAddrTabl[i>>8]=DummyWriteTabl;
- }
- if (!FujiCart_Attach ()) FujiCart_On=0;
+ w=DetectCartMapper ();
+ if (w && Verbose) printf ("FujiCart: %s\n",w);
+ /* MapCartridge re-attaches the mailbox for a claimed image (keeping the
+    cart's ACKSEQ) and switches it off for any other */
+ if (CartMapped ()) MapCartridge ();
  return 1;
 }
 
@@ -3475,6 +3561,12 @@ int Z80_Interrupt (void)
   return VDP_Interrupt ();
  }
  return SpinnerInterrupt();
+}
+
+/* Called by the Z80 core at the time armed in Z80_EventAt */
+int Z80_Event (void)
+{
+ return F18A_On? F18A_Event ():Z80_IGNORE_INT;
 }
 
 void Z80_Retn (void) { };

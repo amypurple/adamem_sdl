@@ -14,6 +14,7 @@
 #include "AdamSDLSound_2.h"
 
 #include "AdamemSDL.h"
+#include "F18A.h"
 
 #include "Bitmap.h"
 
@@ -110,6 +111,21 @@ int AutoText80;                               /* 1 if auto-switch to Text80 mode
 
 
 static void JoystickEventHandler(SDL_Event *event);
+
+/* F18A: copy the last complete 512x240 frame to the surface */
+static void PutImageF18A (void)
+{
+    const word *src=F18A_Screen ();
+    int y;
+    SDL_LockSurface(screen);
+    for (y=0;y<F18A_HEIGHT;++y)
+        memcpy ((byte *)screen->pixels+y*screen->pitch,src+y*F18A_WIDTH,F18A_WIDTH*2);
+    SDL_UnlockSurface(screen);
+    SDL_UpdateTexture(sdlTexture, NULL, screen->pixels, screen->pitch);
+    SDL_RenderClear(sdlRenderer);
+    SDL_RenderCopy(sdlRenderer, sdlTexture, NULL, NULL);
+    SDL_RenderPresent(sdlRenderer);
+}
 
 static void PutImage (void)
 {
@@ -522,7 +538,7 @@ static void keyboard_update (void)
             //    PutImage();
             break;
         default:
-            if (Verbose) printf("Unhandled SDL Event 0x%x\n", event.type);
+            if (Verbose&32) printf("Unhandled SDL Event 0x%x\n", event.type);
             fflush(stdout);
             break;
         }
@@ -1087,8 +1103,22 @@ int InitMachine(void)
     memset (VGA_Palette,0,sizeof(VGA_Palette));
     memcpy (VGA_Palette,Coleco_Palette,16*3);
 
+    if (F18A_On && ntscFilter)
+    {
+        printf("The NTSC filter is not available with the F18A, turning it off\n");
+        ntscFilter=0;
+        free(ntsc);
+        ntsc=NULL;
+    }
     width=WIDTH;
     height = ntscFilter ? HEIGHT * 2 : HEIGHT;
+    if (F18A_On)
+    {
+        /* 512x240 frame: 256-pixel modes are doubled across, 192-line
+           modes have a border; shown at the 256x240 aspect */
+        width=F18A_WIDTH;
+        height=F18A_HEIGHT;
+    }
 //    Black = 0;
 //    White = 0xff;
     switch (videomode)
@@ -1096,10 +1126,12 @@ int InitMachine(void)
         case 0:
             windowWidth = ntscFilter ? SMS_NTSC_OUT_WIDTH(width) : width * 2;
             windowHeight = ntscFilter ? height : height * 2;
+            if (F18A_On) { windowWidth = width; windowHeight = height * 2; }
             break;
         case 1:
             windowWidth = ntscFilter ? SMS_NTSC_OUT_WIDTH(width) * 2 : width * 3;
             windowHeight = ntscFilter ? height*2 : height*3;
+            if (F18A_On) { windowWidth = width * 3 / 2; windowHeight = height * 3; }
             break;
         case 2:
             windowWidth=1280;
@@ -1526,6 +1558,11 @@ void Keyboard (void)
     }
 
      /* Check if a screen shot should be taken */
+    if (makeshot && F18A_On)
+    {
+        printf("Screen shots are not available with the F18A\n");
+        makeshot=0;
+    }
     if (makeshot)
     {
         WriteBitmap (szBitmapFile,8,17,width,width,height,

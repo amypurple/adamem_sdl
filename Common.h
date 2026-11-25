@@ -608,6 +608,7 @@ static int CheckTDOS (void)             /* Return offset of screenbuffer    */
 void RefreshScreen (int ScreenChanged)
 {
  int i;
+ if (F18A_On) { PutImageF18A (); return; }
  if (ScreenON)
  {
 #ifdef TEXT80
@@ -686,6 +687,7 @@ void RefreshScreen (int ScreenChanged)
 /****************************************************************************/
 void ColourScreen (void)
 {
+ if (F18A_On) return;
 #if defined(MSDOS) || defined (LINUX_SVGA)
  VGA_SetBkColour (VDP.BGColour);
 #else

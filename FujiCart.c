@@ -724,7 +724,9 @@ int FujiCart_SetEndpoint (const char *spec)
 
 int FujiCart_HasClaim (const unsigned char *image,int size)
 {
- return size>=0x8000 && !memcmp (image+FUJICART_CLAIM,"FUJI",4);
+ /* as Gearcoleco: a valid 55AA/AA55 header at 0 plus the claim */
+ int hdr=(image[0]==0x55 && image[1]==0xAA) || (image[0]==0xAA && image[1]==0x55);
+ return hdr && size>=0x8000 && !memcmp (image+FUJICART_CLAIM,"FUJI",4);
 }
 
 int FujiCart_Attach (void)

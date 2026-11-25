@@ -124,6 +124,8 @@ extern int Z80_ICount;       /* T-state count                               */
 extern int Z80_M1Wait;       /* extra T-states per M1 (opcode fetch) cycle */
 extern unsigned Z80_CycleBase; /* T-states at the start of the current slice */
 /* Running T-state counter (wraps at 2^32), used to timestamp sound writes */
+extern unsigned Z80_EventAt;   /* T-state of the next device event       */
+extern int Z80_EventOn;        /* 1 if Z80_EventAt is armed              */
 #define Z80_CyclesNow() (Z80_CycleBase+(unsigned)(Z80_IPeriod-Z80_ICount))
 extern int Z80_IRQ;          /* Current IRQ status. Checked after EI occurs */
 #define Z80_IGNORE_INT  -1   /* Ignore interrupt                            */
@@ -143,6 +145,8 @@ void Z80_SetWaitStates (int n);    /* Set number of memory wait states.     */
                                    /* Z80_RDSTACK and Z80_WRSTACK           */
 void Z80_Patch (Z80_Regs *Regs);   /* Called when ED FE occurs. Can be used */
                                    /* to emulate disk access etc.           */
+int Z80_Event(void);               /* Called when Z80_EventAt is reached;  */
+                                   /* returns like Z80_Interrupt()         */
 int Z80_Interrupt(void);           /* This is called after IPeriod T-States */
                                    /* have been executed. It should return  */
                                    /* Z80_IGNORE_INT, Z80_NMI_INT or a byte */

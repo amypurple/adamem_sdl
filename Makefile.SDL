@@ -15,7 +15,7 @@ CFLAGS	= -Wall -Wformat=0 -O2 -fomit-frame-pointer -IIDE \
           -DPRINT_MEM -DPRINT_IO -DLSB_FIRST -DSDL -DDEBUG -DSOUND -DSOUND_PSG -DIDEHD -I/usr/include/SDL2
 ASFLAGS = -Wall -c
 
-OBJECTS = ADAMEm.o Coleco.o Z80.o AdamemSDL.o AdamSDLSound_2.o Sound.o Z80Debug.o Bitmap.o HarddiskIDE.o sms_ntsc.o AdamNet.o
+OBJECTS = ADAMEm.o Coleco.o Z80.o AdamemSDL.o AdamSDLSound_2.o Sound.o Z80Debug.o Bitmap.o HarddiskIDE.o sms_ntsc.o AdamNet.o FujiCart.o F18A.o
 
 all:    adamem cvem keys z80dasm snapedit
 
@@ -48,6 +48,8 @@ snapedit: snapedit.o
 ADAMEm.o:   ADAMEm.c Coleco.h Z80.h Help.h Z80IO.h AdamNet.h
 Coleco.o:   Coleco.c Coleco.h Z80.h Z80IO.h AdamNet.h
 AdamNet.o:  AdamNet.c AdamNet.h
+FujiCart.o: FujiCart.c FujiCart.h
+F18A.o: F18A.c F18A.h Z80.h
 Bitmap.o:   Bitmap.c Bitmap.h
 Z80Debug.o: Z80Debug.c Z80.h Z80IO.h z80dasm.h
 Z80.o:      Z80.c Z80.h Z80CDx86.h Z80IO.h Z80DAA.h
