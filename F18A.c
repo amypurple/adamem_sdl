@@ -21,7 +21,11 @@
 extern int IFreq;                       /* Coleco.c: 50 or 60 Hz            */
 extern int Verbose;
 
-int F18A_On=0;
+int F18A_On=1;                          /* default: line-by-line TMS9918A  */
+int F18A_Chip=F18A_CHIP_TMS9918;
+
+static byte OwnVRAM[0x4000];
+static byte *VRAM=OwnVRAM;              /* ADAMEm's VDP.VRAM once set       */
 
 /* Status register 0 bits */
 #define ST_F   0x80                     /* vertical blank                   */
@@ -51,7 +55,6 @@ static const word DefaultPalette[64]=
 
 static struct
 {
- byte VRAM[0x4000];
  byte Reg[64];
  byte Status;                           /* status register 0                */
  word Addr;                             /* VRAM address                     */
@@ -87,15 +90,24 @@ static struct
  unsigned long long GpuRem;
  word DmaSrc,DmaDst;
  byte DmaW,DmaH,DmaStride,DmaCtl;
+ /* TMS9918A VRAM access slots */
+ int  PendKind;                         /* 0 none, 1 write, 2 read-ahead    */
+ unsigned PendAt;                       /* T-state of the slot serving it   */
+ byte PendData;
+ unsigned Dropped;                      /* accesses lost by going too fast  */
 } F;
 
+int F18A_VramTiming=0;
+
 static word Work[F18A_HEIGHT][F18A_WIDTH];  /* frame being drawn            */
+static byte IdxWork[192][256];              /* TMS9918A: colour indices     */
+static byte IdxShown[192][256];
 static word Shown[F18A_HEIGHT][F18A_WIDTH]; /* last complete frame          */
 
 static byte TileCol[F18A_WIDTH],TileFlg[F18A_WIDTH];
 static byte SprCol[256],SprFlg[256],SprOcc[256];
 
-static byte VR (int a) { return F.VRAM[a&0x3FFF]; }
+static byte VR (int a) { return VRAM[a&0x3FFF]; }
 
 static void SetPal565 (int i)
 {
@@ -119,6 +131,7 @@ static void ResetRegisters (void)
 }
 
 static void ArmEvent (void);
+static void ServePending (int force);
 
 /* Recompute the interrupt line; a rising edge requests an NMI */
 static void UpdateInt (void)
@@ -132,6 +145,7 @@ static void UpdateInt (void)
 static int SpriteLimit (void)
 {
  int n=F.Reg[30]&0x1F;
+ if (F18A_Chip==F18A_CHIP_TMS9918) return 4;
  return (n==0x1F || n==0)? 32:n;
 }
 
@@ -155,8 +169,8 @@ static void WriteReg (int r,byte v,int gpu)
 {
  switch (r)
  {
-  case 0:  F.Reg[0]=v&0x16; break;
-  case 1:  F.Reg[1]=v&0x7B; break;
+  case 0:  F.Reg[0]=v&(F18A_Chip? 0x16:0x03); break;
+  case 1:  F.Reg[1]=v&(F18A_Chip? 0x7B:0xFF); break;
   case 2:  F.Reg[2]=v&0x0F; break;
   case 4:  F.Reg[4]=v&0x07; break;
   case 5:  F.Reg[5]=v&0x7F; break;
@@ -210,6 +224,7 @@ static void WriteReg (int r,byte v,int gpu)
 /* above 7 fold onto 0-7 as on a TMS9918A, unless 80 columns are selected. */
 static void RegisterWrite (int r,byte v)
 {
+ if (F18A_Chip==F18A_CHIP_TMS9918) { WriteReg (r&7,v,0); return; }
  if (r==57)
  {
   int valid=(v&0xFC)==0x1C;
@@ -451,6 +466,7 @@ static void RenderLine (int y)
   if (SprFlg[x>>1] && (TileFlg[x]&(PX_OPAQUE|PX_PRIORITY))!=(PX_OPAQUE|PX_PRIORITY))
    c=SprCol[x>>1];
   out[x]=F.Pal565[c&63];
+  if (!(x&1) && y<192) IdxWork[y][x>>1]=(byte)(c&63);
  }
 }
 
@@ -461,7 +477,8 @@ static void FinishFrame (void)
  word bd=F.Pal565[Backdrop ()];
  for (y=0;y<b;++y)
   for (x=0;x<F18A_WIDTH;++x) Work[y][x]=Work[F18A_HEIGHT-1-y][x]=bd;
- memcpy (Shown,Work,sizeof(Shown));
+ if (F18A_Chip==F18A_CHIP_F18A) memcpy (Shown,Work,sizeof(Shown));
+ else memcpy (IdxShown,IdxWork,sizeof(IdxShown));
  F.NewFrame=1;
 }
 
@@ -490,7 +507,7 @@ static byte GRead (word a)
 {
  switch (a>>12)
  {
-  case 0: case 1: case 2: case 3: return F.VRAM[a&0x3FFF];
+  case 0: case 1: case 2: case 3: return VRAM[a&0x3FFF];
   case 4:  return F.GRAM[a&0x7FF];
   case 5:  { word c=F.Pal[(a>>1)&63]; return (byte)((a&1)? c:(c>>8)); }
   case 6:  return RegisterRead (a&0x3F);
@@ -517,7 +534,7 @@ static void GWrite (word a,byte v)
 {
  switch (a>>12)
  {
-  case 0: case 1: case 2: case 3: F.VRAM[a&0x3FFF]=v; break;
+  case 0: case 1: case 2: case 3: VRAM[a&0x3FFF]=v; break;
   case 4: F.GRAM[a&0x7FF]=v; break;
   case 5:
   {
@@ -694,7 +711,7 @@ static void Pix (word xy,int d)
   a=(word)(((F.Reg[32]<<6)+y*((w+3)>>2)+(x>>2))&0x3FFF);
  }
  if (opt&0xC000) { F.R[d]=a; Clk+=1; return; }
- data=F.VRAM[a];
+ data=VRAM[a];
  Clk+=1;
  shift=6-((x&3)<<1);
  old=(data>>shift)&3;
@@ -709,7 +726,7 @@ static void Pix (word xy,int d)
   }
   if (write)
   {
-   F.VRAM[a]=(byte)((data&~(3<<shift))|((opt&3)<<shift));
+   VRAM[a]=(byte)((data&~(3<<shift))|((opt&3)<<shift));
    Clk+=1;
   }
  }
@@ -957,6 +974,7 @@ static void EndOfLine (void)
 void F18A_Sync (void)
 {
  unsigned now=Z80_CyclesNow();
+ ServePending (0);
  while ((int)(now-LineEnd(F.Line))>=0)
  {
   GpuRunTo (LineEnd (F.Line));
@@ -994,6 +1012,82 @@ int F18A_Event (void)
 }
 
 /****************************************************************************/
+/** TMS9918A VRAM access slots (-vramtiming)                                **/
+/** The VDP fetches the picture from VRAM and lets the CPU in only between **/
+/** its own fetches. The CPU's byte waits in one buffer for the next free  **/
+/** slot; a second access arriving before that slot replaces the first, so **/
+/** one byte is lost. Own model, from the TMS9918A data sheet's worst-case **/
+/** CPU access times and published hardware measurements: slots 32 dots  **/
+/** apart in Graphics I/II with longer gaps in the horizontal border, a    **/
+/** few dots apart in text mode, frequent in multicolor except in the      **/
+/** border; never too fast with the display off or in the vertical border.**/
+/** A line is 342 pixel clocks; the picture is its first 256.             **/
+/****************************************************************************/
+#define LINE_PX 342
+
+/* Earliest slot at or after T-state t, as a T-state. During the picture */
+/* the CPU gets a slot every 'act' pixel clocks; in the horizontal blank  */
+/* the sprite fetches leave only a few, 'hb' apart, which gives the long  */
+/* worst-case waits of the data sheet.                                    */
+static unsigned SlotAfter (unsigned t)
+{
+ int rel=(int)(t-F.T0),n,p,act,hb,q;
+ long long lt;
+ if (rel<0) rel=0;
+ n=(int)(((long long)rel*F.NL)/F.FC);
+ lt=((long long)n*F.FC)/F.NL;                 /* start of line n, rel. T0 */
+ p=(int)(((rel-lt)*LINE_PX*F.NL)/F.FC)+7;     /* 7 dots: request latency  */
+ if ((n%F.NL)>=F.H || !(F.Reg[1]&0x40))
+  { act=4; hb=4; }                            /* blank: never too fast    */
+ else if (F.Reg[1]&0x10) { act=6; hb=6; }     /* text: 6 dots             */
+ else if (F.Reg[1]&0x08) { act=8; hb=29; }    /* multicolor: long border  */
+ else { act=32; hb=35; }                      /* graphics I/II            */
+ if (p<256)
+  q=((p+act-1)/act)*act;
+ else
+ {
+  q=256-act+hb+((p-(256-act+hb)+hb-1)/hb)*hb;
+  if (p<=256-act+hb) q=256-act+hb;
+  if (q>=LINE_PX) q=LINE_PX;                  /* first slot of next line  */
+ }
+ return F.T0+(unsigned)(lt+((long long)q*F.FC)/((long long)LINE_PX*F.NL));
+}
+
+/* Carry out the waiting access if its slot has come */
+static void ServePending (int force)
+{
+ if (!F.PendKind) return;
+ if (!force && (int)(Z80_CyclesNow()-F.PendAt)<0) return;
+ if (F.PendKind==1) VRAM[F.Addr]=F.PendData;
+ else F.ReadBuf=VRAM[F.Addr];
+ F.Addr=(word)((F.Addr+1)&0x3FFF);
+ F.PendKind=0;
+}
+
+/* Queue a write (kind 1) or read-ahead (kind 2) for the next slot */
+static void QueueAccess (int kind,byte v)
+{
+ ServePending (0);
+ if (F.PendKind)                        /* previous one not done: lost      */
+ {
+  F.Dropped++;
+  F.PendKind=kind;
+  F.PendData=v;
+  return;
+ }
+ F.PendKind=kind;
+ F.PendData=v;
+ F.PendAt=SlotAfter (Z80_CyclesNow());
+}
+
+static int Timed (void)
+{
+ return F18A_VramTiming && F18A_Chip==F18A_CHIP_TMS9918;
+}
+
+unsigned F18A_DroppedAccesses (void) { return F.Dropped; }
+
+/****************************************************************************/
 /** Ports                                                                  **/
 /****************************************************************************/
 static void Advance (void)
@@ -1019,8 +1113,9 @@ void F18A_WriteData (byte v)
   else F.DPM=0;
   return;
  }
- F.VRAM[F.Addr]=v;
  F.ReadBuf=v;
+ if (Timed ()) { QueueAccess (1,v); return; }
+ VRAM[F.Addr]=v;
  Advance ();
 }
 
@@ -1029,8 +1124,10 @@ byte F18A_ReadData (void)
  byte r;
  F18A_Sync ();
  F.First=1;
+ ServePending (0);
  r=F.ReadBuf;
- F.ReadBuf=F.VRAM[F.Addr];
+ if (Timed ()) { QueueAccess (2,0); return r; }
+ F.ReadBuf=VRAM[F.Addr];
  Advance ();
  return r;
 }
@@ -1038,6 +1135,7 @@ byte F18A_ReadData (void)
 void F18A_WriteCtrl (byte v)
 {
  F18A_Sync ();
+ ServePending (1);                      /* the address port ends the access */
  if (F.First)
  {
   F.First=0;
@@ -1052,9 +1150,13 @@ void F18A_WriteCtrl (byte v)
    RegisterWrite (v&0x3F,lo);
   else if (!(v&0x40))
   {
-   F.ReadBuf=F.VRAM[F.Addr];
    F.RegRead=RegisterRead (F.Addr>>8);
-   Advance ();
+   if (Timed ()) QueueAccess (2,0);
+   else
+   {
+    F.ReadBuf=VRAM[F.Addr];
+    Advance ();
+   }
   }
  }
  ArmEvent ();
@@ -1121,10 +1223,29 @@ void F18A_Reset (void)
  StartFrame ();
  memset (Work,0,sizeof(Work));
  memset (Shown,0,sizeof(Shown));
+ memset (IdxWork,0,sizeof(IdxWork));
+ memset (IdxShown,0,sizeof(IdxShown));
  if (F18A_On) ArmEvent ();
 }
 
 const word *F18A_Screen (void) { return &Shown[0][0]; }
+const byte *F18A_IndexScreen (void) { return &IdxShown[0][0]; }
+
+void F18A_SetVRAM (byte *p) { VRAM=p? p:OwnVRAM; }
+
+byte F18A_GetStatus (void)  { return F.Status; }
+word F18A_GetAddr (void)    { return F.Addr; }
+
+/* Take over the TMS9918A state kept by ADAMEm (old snapshots) */
+void F18A_ImportTMS (const int *reg,int status,int addr)
+{
+ int i;
+ for (i=0;i<8;++i) WriteReg (i,(byte)reg[i],0);
+ F.Status=(byte)status;
+ F.Addr=(word)(addr&0x3FFF);
+ F.First=1;
+ UpdateInt ();
+}
 
 int F18A_ScreenChanged (void)
 {
@@ -1135,7 +1256,7 @@ int F18A_ScreenChanged (void)
 
 /* The saved block stores the timing as an offset into the frame, since   */
 /* the Z80 clock restarts after a load.                                    */
-#define F18A_STATE_TAG "F18A0002"
+#define F18A_STATE_TAG "F18A0004"
 
 int F18A_SaveState (FILE *f)
 {
@@ -1162,6 +1283,6 @@ int F18A_LoadState (FILE *f)
 }
 
 byte F18A_GetReg (int r)    { return F.Reg[r&63]; }
-byte F18A_GetVRAM (int a)   { return F.VRAM[a&0x3FFF]; }
+byte F18A_GetVRAM (int a)   { return VRAM[a&0x3FFF]; }
 word F18A_GetPalette (int i){ return F.Pal[i&63]; }
 int  F18A_Unlocked (void)   { return F.Unlocked; }

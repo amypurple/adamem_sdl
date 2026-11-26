@@ -55,6 +55,7 @@ char *Options[]=
   "fujinet", //59
   "fujicart", //60
   "vdp", //61
+  "vramtiming", //62
   NULL
 };
 
@@ -74,6 +75,7 @@ char *AbvOptions[]=
   "fn", //59
   "fc", //60
   "vdp", //61
+  "vt", //62
   NULL
 };
 
@@ -631,19 +633,28 @@ static int ParseOptions (int argc,char *argv[])
            if (N>=argc || !FujiCart_SetEndpoint (argv[N]))
                misparm=1;
            break;
-       case 61:                          /* -vdp tms9918|f18a              */
+       case 61:                          /* -vdp tms9918|f18a|classic      */
            N++;
            if (N>=argc)
                misparm=1;
            else if (!strcmp (argv[N],"f18a"))
-               F18A_On=1;
+           { F18A_On=1; F18A_Chip=F18A_CHIP_F18A; }
            else if (!strcmp (argv[N],"tms9918") || !strcmp (argv[N],"tms9918a"))
+           { F18A_On=1; F18A_Chip=F18A_CHIP_TMS9918; }
+           else if (!strcmp (argv[N],"classic"))
                F18A_On=0;
            else
            {
-               printf("-vdp: use tms9918 or f18a\n");
+               printf("-vdp: use tms9918, f18a or classic\n");
                return 0;
            }
+           break;
+       case 62:                          /* -vramtiming 0|1                */
+           N++;
+           if (N>=argc)
+               misparm=1;
+           else
+               F18A_VramTiming=atoi (argv[N])!=0;
            break;
        default: printf("Wrong option '%s'\n",argv[N]);
              return 0;
@@ -697,6 +708,7 @@ static int GetCartName (int argc,char *argv[])
              break;
     case 60:                             /* -fujicart host:port             */
     case 61:                             /* -vdp tms9918|f18a               */
+    case 62:                             /* -vramtiming 0|1                 */
              N++;
              if (N>=argc)
               return 0;

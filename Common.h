@@ -608,7 +608,7 @@ static int CheckTDOS (void)             /* Return offset of screenbuffer    */
 void RefreshScreen (int ScreenChanged)
 {
  int i;
- if (F18A_On) { PutImageF18A (); return; }
+ if (F18A_FULL) { PutImageF18A (); return; }
  if (ScreenON)
  {
 #ifdef TEXT80
@@ -642,6 +642,14 @@ void RefreshScreen (int ScreenChanged)
 #endif
   {
    if (!ScreenChanged) return;
+   if (F18A_On)                         /* line-by-line TMS9918A frame      */
+   {
+    const byte *S=F18A_IndexScreen ();
+    int P=WIDTH*(HEIGHT-192)/2+(WIDTH-256)/2,X,Y;
+    for (Y=0;Y<192;++Y,P+=WIDTH)
+     for (X=0;X<256;++X) PutPixel (P+X,PalBuf[S[Y*256+X]&15]);
+   }
+   else
    switch((VDP.Reg[0]&0x02)|(VDP.Reg[1]&0x18))
    {
     case 0x12:
@@ -687,7 +695,7 @@ void RefreshScreen (int ScreenChanged)
 /****************************************************************************/
 void ColourScreen (void)
 {
- if (F18A_On) return;
+ if (F18A_FULL) return;
 #if defined(MSDOS) || defined (LINUX_SVGA)
  VGA_SetBkColour (VDP.BGColour);
 #else

@@ -926,9 +926,23 @@ static void OutA0 (byte Val)
  VDP.VKey=1;
 }
 
+/* The line-by-line VDP (F18A.c) owns the state; keep ADAMEm's VDP copy
+   current for snapshots, TDOS 80 columns and the border colour */
+static void MirrorF18A (void)
+{
+ int i,bg=VDP.BGColour;
+ for (i=0;i<8;++i) VDP.Reg[i]=F18A_GetReg (i);
+ VDP.FGColour=VDP.Reg[7]>>4;
+ VDP.BGColour=VDP.Reg[7]&0x0F;
+ VDP.Status=F18A_GetStatus ();
+ VDP.Addr=F18A_GetAddr ();
+ VDP.VKey=1;
+ if (bg!=VDP.BGColour && !F18A_FULL) ColourScreen ();
+}
+
 static void OutA1 (byte Val)
 {
- if (F18A_On) { F18A_WriteCtrl (Val); return; }
+ if (F18A_On) { F18A_WriteCtrl (Val); MirrorF18A (); return; }
  if (VDP.VKey)
  {
   VDP.VR=Val;
@@ -1349,7 +1363,7 @@ static byte InpA0 (void)
 static byte InpA1 (void)
 {
  byte retval;
- if (F18A_On) return F18A_ReadStatus ();
+ if (F18A_On) { retval=F18A_ReadStatus (); VDP.Status=F18A_GetStatus (); return retval; }
  retval=VDP.Status;
  if (VDP.Status & 0x80)
   VDP.Status&=0x3F;
@@ -1500,7 +1514,7 @@ void ResetColeco (int mode)
   RAM[i+1]=0xFF;
  }
  Z80_Reset ();                        /* Reset the Z80 emulator             */
- if (F18A_On) F18A_Reset ();
+ if (F18A_On) { F18A_Reset (); MirrorF18A (); }
  JoyMode=0;                           /* Select joystick mode               */
  NMI_Line=0;                          /* Clear NMI line                     */
  if (EmuMode)
@@ -1927,7 +1941,11 @@ static int GetSnapshotData (FILE *f)
  if (fread(VDP.VRAM,1,16384,f)!=16384) return -1;
  if (fread(RAM,1,RAMSize,f)!=RAMSize) return -1;
  /* F18A state follows; a snapshot without it restarts the F18A */
- if (F18A_On && F18A_LoadState (f)) F18A_Reset ();
+ if (F18A_On && F18A_LoadState (f))
+ {
+  F18A_Reset ();
+  F18A_ImportTMS (VDP.Reg,VDP.Status,VDP.Addr);
+ }
  return 1;
 }
 
@@ -1936,6 +1954,7 @@ static int GetSnapshotData (FILE *f)
 /****************************************************************************/
 static int _SaveSnapshotFile (FILE *f)
 {
+ if (F18A_On) MirrorF18A ();
  Z80_Regs R;
  byte buf[256];
  int i;
@@ -2171,6 +2190,7 @@ int StartColeco(void)
  VDP.VRAM=malloc(16*1024);
  if (Verbose) puts ((VDP.VRAM)?"OK":"FAILED");
  if (!VDP.VRAM) return 0;
+ F18A_SetVRAM (VDP.VRAM);
 
  if (Verbose) puts ("Loading ROMs:");
 
@@ -2482,6 +2502,7 @@ void TrashColeco(void)
  if (RAM) { free (RAM); RAM=0; }
  if (ROM) { free (ROM); ROM=0; }
  if (CART) { free (CART); CART=0; }
+ F18A_SetVRAM (NULL);
  if (VDP.VRAM) { free (VDP.VRAM); VDP.VRAM=0; }
  for (i=0;i<4;++i)
  {
@@ -3452,8 +3473,8 @@ static int VDP_Interrupt(void)
  }
  if (F18A_On)
  {
-  /* The F18A raises its own NMI on the right line (F18A_Event); here
-     only show the last complete frame */
+  /* The line-by-line VDP raises its own NMI on the right line
+     (F18A_Event); here only show the last complete frame */
   F18A_Sync ();
   if (dorefresh) RefreshScreen (F18A_ScreenChanged ());
   return Z80_IGNORE_INT;

@@ -300,17 +300,33 @@ Video options:
 			  1 - 256x212    2 - 256x424
 			  3 - 1280x720   4 - 1920x1080
 -vdp <chip>            -  Select the video chip [tms9918]
-                          tms9918 - TMS9918A
+                          tms9918 - TMS9918A, drawn one line at a time in
+                          step with the Z80: mid-screen changes show, and
+                          the NMI, 5th-sprite and collision flags come on
+                          the right line. 4 sprites per line. Writes to
+                          VRAM are never lost (no access-slot timing).
                           f18a    - F18A: after the unlock sequence, the
                           64-colour palette, ECM tile and sprite modes, a
                           second tile layer, the bitmap layer, scrolling,
                           30 rows, 80 columns, the line interrupt, the
                           status registers, and the GPU (100 MHz, with
-                          PIX and DMA). Drawn one line at a time, so
-                          mid-screen changes show. The GPU starts idle:
-                          the F18A's power-on GPU firmware is not
-                          included. The NTSC filter and screen shots are
-                          not available with the F18A.
+                          PIX and DMA). The GPU starts idle: the F18A's
+                          power-on GPU firmware is not included. The NTSC
+                          filter and screen shots are not available.
+                          classic - the original ADAMEm TMS9918A: the
+                          whole screen drawn once per frame, the NMI on a
+                          1 ms grid.
+-vramtiming <0|1>      -  TMS9918A VRAM access timing [0] (-vdp tms9918 only)
+                          1 - the CPU only reaches VRAM in the slots the
+                          TMS9918A leaves free between its own fetches.
+                          A second access arriving before the first was
+                          served replaces it, so a byte is lost, as on a
+                          real ColecoVision. Spacing between VRAM accesses
+                          that can lose data during the picture: 26
+                          T-states or less in Graphics I/II, 22 or less in
+                          multicolor; never in text mode, with the
+                          display off or in the vertical border. These
+                          match the limits openMSX measured on hardware.
 -palette <mode>        -  Select colour palette to be used [0]
                           0 - Default
                           1 - V9938
